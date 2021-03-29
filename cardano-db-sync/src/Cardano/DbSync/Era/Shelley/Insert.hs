@@ -42,6 +42,7 @@ import           Cardano.Ledger.Mary.Value (AssetName (..), PolicyID (..), Value
 import           Cardano.Slotting.Block (BlockNo (..))
 import           Cardano.Slotting.Slot (EpochNo (..), EpochSize (..), SlotNo (..))
 
+import           Control.Concurrent.STM.TVar (readTVarIO)
 import           Control.Monad.Extra (whenJust)
 import           Control.Monad.Logger (LoggingT)
 import           Control.Monad.Trans.Control (MonadBaseControl)
@@ -124,6 +125,7 @@ insertShelleyBlock tracer network blk lStateSnap details = do
         ]
 
     whenJust (lssNewEpoch lStateSnap) $ \ newEpoch -> do
+      liftIO $ logMyShit tracer (envLedger env)
       insertOnNewEpoch tracer blkId (Generic.blkSlotNo blk) (sdEpochNo details) newEpoch
 
     when (getSyncStatus details == SyncFollowing) $
@@ -142,6 +144,10 @@ renderInsertName eraName =
   case eraName of
     Generic.Shelley -> "insertShelleyBlock"
     other -> mconcat [ "insertShelleyBlock(", textShow other, ")" ]
+
+logMyShit :: Trace IO Text -> LedgerEnv -> IO ()
+logMyShit tracer env =
+  readTVarIO (ruiState $ leRewardUpdate env) >>= logInfo tracer . textShow
 
 -- -----------------------------------------------------------------------------
 

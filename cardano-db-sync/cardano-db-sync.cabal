@@ -97,6 +97,7 @@ library
                       , small-steps
                       , split
                       , shelley-spec-ledger
+                      , stm
                       , text
                       , time
                       , transformers

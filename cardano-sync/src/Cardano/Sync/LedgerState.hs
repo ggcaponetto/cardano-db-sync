@@ -11,6 +11,8 @@ module Cardano.Sync.LedgerState
   , LedgerEnv (..)
   , LedgerStateSnapshot (..)
   , LedgerStateFile (..)
+  , RewardUpdate (..)
+  , RewardUpdateState (..)
   , applyBlock
   , loadLedgerStateAtPoint
   , saveLedgerStateMaybe
@@ -39,7 +41,9 @@ import           Cardano.Slotting.Block (BlockNo (..))
 import           Cardano.Slotting.EpochInfo (EpochInfo, epochInfoEpoch)
 import           Cardano.Slotting.Slot (EpochNo (..), SlotNo (..), WithOrigin (..), fromWithOrigin)
 
+import           Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO)
 import           Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVarIO, writeTVar)
+
 import qualified Control.Exception as Exception
 import           Control.Monad.Extra (firstJustM, fromMaybeM)
 
@@ -99,7 +103,22 @@ data LedgerEnv = LedgerEnv
   , leDir :: !LedgerStateDir
   , leNetwork :: !Shelley.Network
   , leStateVar :: !(TVar CardanoLedgerState)
+  , leRewardUpdate :: !RewardUpdate
   }
+
+data RewardUpdate = RewardUpdate
+  { ruiState :: !(TVar RewardUpdateState)
+  , ruiSubmitData :: !(TMVar Generic.Rewards)
+  , ruiEpochSubmit :: !(TMVar EpochNo)
+  , ruiEpochContinue :: !(TMVar EpochNo)
+  }
+
+data RewardUpdateState
+  = WaitingForData
+  | Processing
+  | WaitingForBoundary
+  deriving (Eq, Show)
+
 
 topLevelConfig :: LedgerEnv -> TopLevelConfig CardanoBlock
 topLevelConfig = Consensus.pInfoConfig . leProtocolInfo
@@ -131,11 +150,13 @@ mkLedgerEnv protocolInfo dir network slot deleteFiles = do
     deleteNewerLedgerStateFiles dir slot
   st <- findLatestLedgerState protocolInfo dir deleteFiles
   var <- newTVarIO st
+  ru <- mkRewardUpdate
   pure LedgerEnv
     { leProtocolInfo = protocolInfo
     , leDir = dir
     , leNetwork = network
     , leStateVar = var
+    , leRewardUpdate = ru
     }
 
 
@@ -457,6 +478,14 @@ ledgerRewardUpdate env lsc =
       LedgerStateShelley sls -> Generic.shelleyRewards (leNetwork env) sls
       LedgerStateAllegra als -> Generic.allegraRewards (leNetwork env) als
       LedgerStateMary mls -> Generic.maryRewards (leNetwork env) mls
+
+mkRewardUpdate :: IO RewardUpdate
+mkRewardUpdate =
+  RewardUpdate
+    <$> newTVarIO  WaitingForData
+    <*> newEmptyTMVarIO
+    <*> newEmptyTMVarIO
+    <*> newEmptyTMVarIO
 
 -- Like 'Consensus.tickThenReapply' but also checks that the previous hash from the block matches
 -- the head hash of the ledger state.
