@@ -147,7 +147,7 @@ renderInsertName eraName =
 
 logMyShit :: Trace IO Text -> LedgerEnv -> IO ()
 logMyShit tracer env =
-  readTVarIO (ruState $ leRewardUpdate env) >>= logInfo tracer . textShow
+  readTVarIO (ruState $ leEpochUpdate env) >>= logInfo tracer . textShow
 
 -- -----------------------------------------------------------------------------
 
@@ -156,14 +156,14 @@ insertOnNewEpoch
     => Trace IO Text -> DB.BlockId -> SlotNo -> EpochNo -> Generic.NewEpoch
     -> ExceptT SyncNodeError (ReaderT SqlBackend m) ()
 insertOnNewEpoch tracer blkId slotNo epochNo newEpoch = do
-    whenJust (Generic.epochUpdate newEpoch) $ \esum -> do
+    whenJust (Generic.neEpochUpdate newEpoch) $ \esum -> do
       let stakes = Generic.euStakeDistribution esum
 
       whenJust (Generic.euRewards esum) $ \ grewards ->
         insertGenericRewards grewards stakes
 
-      insertEpochParam tracer blkId epochNo (Generic.euProtoParams esum) (Generic.euNonce esum)
-      insertEpochStake tracer epochNo stakes
+      insertEpochParam tracer blkId epochNo (Generic.neProtoParams newEpoch) (Generic.neNonce newEpoch)
+      insertEpochStake tracer blkId epochNo stakes
 
     whenJust (Generic.adaPots newEpoch) $ \pots ->
       insertPots blkId slotNo epochNo pots

@@ -1,22 +1,27 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 module Cardano.Sync.Era.Shelley.Generic.EpochUpdate
   ( NewEpoch (..)
   , EpochUpdate (..)
   , AdaPots (..)
   , allegraEpochUpdate
+  , epochUpdate
   , maryEpochUpdate
   , shelleyEpochUpdate
   ) where
 
+import           Cardano.Prelude
+
+import           Cardano.Slotting.Slot (EpochNo (..))
+
 import           Cardano.Sync.Era.Shelley.Generic.ProtoParams
 import           Cardano.Sync.Era.Shelley.Generic.Rewards
 import           Cardano.Sync.Era.Shelley.Generic.StakeDist
+import           Cardano.Sync.Types
 
-import           Data.Maybe (fromMaybe)
-
-import           Ouroboros.Consensus.Block (EpochNo)
 import           Ouroboros.Consensus.Cardano.Block (LedgerState (..), StandardAllegra, StandardMary,
                    StandardShelley)
 import           Ouroboros.Consensus.Cardano.CanHardFork ()
+import           Ouroboros.Consensus.Ledger.Extended (ExtLedgerState (..))
 import           Ouroboros.Consensus.Shelley.Ledger.Block (ShelleyBlock)
 
 import qualified Shelley.Spec.Ledger.BaseTypes as Shelley
@@ -26,14 +31,15 @@ data NewEpoch = NewEpoch
   { epoch :: !EpochNo
   , isEBB :: !Bool
   , adaPots :: !(Maybe AdaPots)
-  , epochUpdate :: !(Maybe EpochUpdate)
+  , neProtoParams :: !ProtoParams
+  , neNonce :: !Shelley.Nonce
+  , neEpochUpdate :: !(Maybe EpochUpdate)
   }
 
 data EpochUpdate = EpochUpdate
-  { euProtoParams :: !ProtoParams
+  { euEpoch :: !EpochNo
   , euRewards :: !(Maybe Rewards)
   , euStakeDistribution :: !StakeDist
-  , euNonce :: !Shelley.Nonce
   }
 
 -- There is a similar type in ledger-spec, but it is not exported yet.
@@ -46,29 +52,37 @@ data AdaPots = AdaPots
   , apFees :: !Coin
   }
 
-allegraEpochUpdate :: Shelley.Network -> LedgerState (ShelleyBlock StandardAllegra) -> Maybe Rewards -> Maybe Shelley.Nonce -> EpochUpdate
-allegraEpochUpdate network sls mRewards mNonce =
+-- Create an EpochUpdate from the current epoch state and the rewards from the last epoch.
+epochUpdate :: Shelley.Network -> EpochNo -> ExtLedgerState CardanoBlock -> Maybe Rewards -> Maybe EpochUpdate
+epochUpdate nw epochNo els mRewards =
+  case ledgerState els of
+    LedgerStateByron _ -> Nothing
+    LedgerStateShelley sls -> Just $ shelleyEpochUpdate nw epochNo sls mRewards
+    LedgerStateAllegra als -> Just $ allegraEpochUpdate nw epochNo als mRewards
+    LedgerStateMary mls -> Just $ maryEpochUpdate nw epochNo mls mRewards
+
+
+
+allegraEpochUpdate :: Shelley.Network -> EpochNo -> LedgerState (ShelleyBlock StandardAllegra) -> Maybe Rewards -> EpochUpdate
+allegraEpochUpdate nw epochNo als mRewards =
   EpochUpdate
-    { euProtoParams = allegraProtoParams sls
+    { euEpoch = epochNo
     , euRewards = mRewards
-    , euStakeDistribution = allegraStakeDist network sls
-    , euNonce = fromMaybe Shelley.NeutralNonce mNonce
+    , euStakeDistribution = allegraStakeDist nw als
     }
 
-maryEpochUpdate :: Shelley.Network -> LedgerState (ShelleyBlock StandardMary) -> Maybe Rewards -> Maybe Shelley.Nonce -> EpochUpdate
-maryEpochUpdate network sls mRewards mNonce =
+maryEpochUpdate :: Shelley.Network -> EpochNo -> LedgerState (ShelleyBlock StandardMary) -> Maybe Rewards -> EpochUpdate
+maryEpochUpdate nw epochNo mls mRewards =
   EpochUpdate
-    { euProtoParams = maryProtoParams sls
+    { euEpoch = epochNo
     , euRewards = mRewards
-    , euStakeDistribution = maryStakeDist network sls
-    , euNonce = fromMaybe Shelley.NeutralNonce mNonce
+    , euStakeDistribution = maryStakeDist nw mls
     }
 
-shelleyEpochUpdate :: Shelley.Network -> LedgerState (ShelleyBlock StandardShelley) -> Maybe Rewards -> Maybe Shelley.Nonce -> EpochUpdate
-shelleyEpochUpdate network sls mRewards mNonce =
+shelleyEpochUpdate :: Shelley.Network -> EpochNo -> LedgerState (ShelleyBlock StandardShelley) -> Maybe Rewards -> EpochUpdate
+shelleyEpochUpdate nw epochNo sls mRewards =
   EpochUpdate
-    { euProtoParams = shelleyProtoParams sls
+    { euEpoch = epochNo
     , euRewards = mRewards
-    , euStakeDistribution = shelleyStakeDist network sls
-    , euNonce = fromMaybe Shelley.NeutralNonce mNonce
+    , euStakeDistribution = shelleyStakeDist nw sls
     }

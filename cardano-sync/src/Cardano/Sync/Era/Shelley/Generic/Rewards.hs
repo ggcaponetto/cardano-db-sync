@@ -3,12 +3,14 @@
 module Cardano.Sync.Era.Shelley.Generic.Rewards
   ( Rewards (..)
   , allegraRewards
+  , epochRewards
   , maryRewards
   , rewardUpdateMaybe
   , shelleyRewards
   ) where
 
 import           Cardano.Sync.Era.Shelley.Generic.StakeCred
+import           Cardano.Sync.Types
 
 import           Cardano.Ledger.Era (Crypto)
 
@@ -22,6 +24,7 @@ import qualified Data.Set as Set
 import           Ouroboros.Consensus.Cardano.Block (LedgerState (..), StandardAllegra,
                    StandardCrypto, StandardMary, StandardShelley)
 import           Ouroboros.Consensus.Cardano.CanHardFork ()
+import           Ouroboros.Consensus.Ledger.Extended (ExtLedgerState (..))
 import           Ouroboros.Consensus.Shelley.Ledger.Block (ShelleyBlock)
 import qualified Ouroboros.Consensus.Shelley.Ledger.Ledger as Consensus
 
@@ -39,6 +42,13 @@ data Rewards = Rewards
   , orphaned :: Map StakeCred (Set (Shelley.Reward StandardCrypto))
   }
 
+epochRewards :: Shelley.Network -> ExtLedgerState CardanoBlock -> Maybe Rewards
+epochRewards nw lstate =
+  case ledgerState lstate of
+    LedgerStateByron _ -> error "epochRewards: Unexpected Byron era"
+    LedgerStateShelley sls -> genericRewards nw sls
+    LedgerStateAllegra als -> genericRewards nw als
+    LedgerStateMary mls -> genericRewards nw mls
 
 allegraRewards :: Shelley.Network -> LedgerState (ShelleyBlock StandardAllegra) -> Maybe Rewards
 allegraRewards = genericRewards

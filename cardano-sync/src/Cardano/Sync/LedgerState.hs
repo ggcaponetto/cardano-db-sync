@@ -11,8 +11,8 @@ module Cardano.Sync.LedgerState
   , LedgerEnv (..)
   , LedgerStateSnapshot (..)
   , LedgerStateFile (..)
-  , RewardUpdate (..)
-  , RewardUpdateState (..)
+  , EpochUpdateControl (..)
+  , EpochUpdateState (..)
   , applyBlock
   , loadLedgerStateAtPoint
   , saveLedgerStateMaybe
@@ -30,8 +30,7 @@ import qualified Cardano.Ledger.Val as Val
 
 import           Cardano.Sync.Config.Types
 import qualified Cardano.Sync.Era.Cardano.Util as Cardano
-import qualified Cardano.Sync.Era.Shelley.Generic.EpochUpdate as Generic
-import qualified Cardano.Sync.Era.Shelley.Generic.Rewards as Generic
+import qualified Cardano.Sync.Era.Shelley.Generic as Generic
 import           Cardano.Sync.Types hiding (CardanoBlock)
 import           Cardano.Sync.Util
 
@@ -41,7 +40,7 @@ import           Cardano.Slotting.Block (BlockNo (..))
 import           Cardano.Slotting.EpochInfo (EpochInfo, epochInfoEpoch)
 import           Cardano.Slotting.Slot (EpochNo (..), SlotNo (..), WithOrigin (..), fromWithOrigin)
 
-import           Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO)
+import           Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar)
 import           Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVarIO, writeTVar)
 
 import qualified Control.Exception as Exception
@@ -72,7 +71,6 @@ import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
 import qualified Ouroboros.Consensus.Node.ProtocolInfo as Consensus
 import           Ouroboros.Consensus.Shelley.Ledger.Block
 import qualified Ouroboros.Consensus.Shelley.Ledger.Ledger as Consensus
-import           Ouroboros.Consensus.Shelley.Protocol (StandardCrypto)
 import qualified Ouroboros.Consensus.Shelley.Protocol as Consensus
 import           Ouroboros.Consensus.Storage.Serialisation (DecodeDisk (..), EncodeDisk (..))
 
@@ -82,11 +80,8 @@ import qualified Ouroboros.Network.Point as Point
 import qualified Shelley.Spec.Ledger.API.Protocol as Shelley
 import qualified Shelley.Spec.Ledger.BaseTypes as Shelley
 import           Shelley.Spec.Ledger.Coin (Coin)
-import qualified Shelley.Spec.Ledger.Credential as Shelley
-import qualified Shelley.Spec.Ledger.Keys as Shelley
 import           Shelley.Spec.Ledger.LedgerState (AccountState, EpochState, UTxOState)
 import qualified Shelley.Spec.Ledger.LedgerState as Shelley
-import qualified Shelley.Spec.Ledger.Rewards as Shelley
 import qualified Shelley.Spec.Ledger.STS.Tickn as Shelley
 import qualified Shelley.Spec.Ledger.UTxO as Shelley
 
@@ -107,20 +102,20 @@ data LedgerEnv = LedgerEnv
   , leDir :: !LedgerStateDir
   , leNetwork :: !Shelley.Network
   , leStateVar :: !(TVar CardanoLedgerState)
-  , leRewardUpdate :: !RewardUpdate
+  , leEpochUpdate :: !EpochUpdateControl
   }
 
-data RewardUpdate = RewardUpdate
-  { ruState :: !(TVar RewardUpdateState)
-  , ruSubmitData :: !(TMVar Generic.Rewards)
-  , ruEpochSubmit :: !(TMVar EpochNo)
-  , ruEpochContinue :: !(TMVar EpochNo)
+data EpochUpdateControl = EpochUpdateControl
+  { ruState :: !(TVar EpochUpdateState)
+  , ruInsertDone :: !(TMVar Generic.EpochUpdate)
+  , ruUpdateReady :: !(TMVar ())
+  , ruCommit :: !(TMVar ())
   }
 
-data RewardUpdateState
+data EpochUpdateState
   = WaitingForData
   | Processing
-  | WaitingForBoundary
+  | WaitingForEpoch
   deriving (Eq, Show)
 
 
@@ -154,13 +149,13 @@ mkLedgerEnv protocolInfo dir network slot deleteFiles = do
     deleteNewerLedgerStateFiles dir slot
   st <- findLatestLedgerState protocolInfo dir deleteFiles
   var <- newTVarIO st
-  ru <- mkRewardUpdate
+  ru <- mkEpochUpdateControl
   pure LedgerEnv
     { leProtocolInfo = protocolInfo
     , leDir = dir
     , leNetwork = network
     , leStateVar = var
-    , leRewardUpdate = ru
+    , leEpochUpdate = ru
     }
 
 
@@ -206,9 +201,11 @@ applyBlock env blk = do
               { Generic.epoch = ledgerEpochNo env newState
               , Generic.isEBB = isJust $ blockIsEBB blk
               , Generic.adaPots = getAdaPots newState
-              , Generic.epochUpdate =
-                  ledgerEpochUpdate env (clsState newState)
-                    (ledgerRewardUpdate env (ledgerState $ clsState oldState))
+              , Generic.neProtoParams = Generic.epochProtoParams (clsState newState)
+              , Generic.neNonce = fromMaybe Shelley.NeutralNonce (extractEpochNonce $ clsState newState)
+              , Generic.neEpochUpdate =
+                  Generic.epochUpdate (leNetwork env) (ledgerEpochNo env newState) (clsState newState)
+                    (ledgerEpochUpdate env (ledgerState $ clsState oldState))
               }
         else Nothing
 
@@ -464,37 +461,25 @@ ledgerEpochNo env cls =
     epochInfo :: EpochInfo Identity
     epochInfo = epochInfoLedger (configLedger $ topLevelConfig env) (hardForkLedgerStatePerEra . ledgerState $ clsState cls)
 
-ledgerSlotNo :: CardanoLedgerState -> SlotNo
-ledgerSlotNo cls =
+_ledgerSlotNo :: CardanoLedgerState -> SlotNo
+_ledgerSlotNo cls =
     case ledgerTipSlot (ledgerState (clsState cls)) of
       Origin -> 0 -- An empty chain is in epoch 0
       NotOrigin slot -> slot
 
--- Create an EpochUpdate from the current epoch state and the rewards from the last epoch.
-ledgerEpochUpdate :: LedgerEnv -> ExtLedgerState CardanoBlock -> Maybe Generic.Rewards -> Maybe Generic.EpochUpdate
-ledgerEpochUpdate env els mRewards =
-  case ledgerState els of
-    LedgerStateByron _ -> Nothing
-    LedgerStateShelley sls -> Just $ Generic.shelleyEpochUpdate (leNetwork env) sls mRewards mNonce
-    LedgerStateAllegra als -> Just $ Generic.allegraEpochUpdate (leNetwork env) als mRewards mNonce
-    LedgerStateMary mls -> Just $ Generic.maryEpochUpdate (leNetwork env) mls mRewards mNonce
-  where
-    mNonce :: Maybe Shelley.Nonce
-    mNonce = extractEpochNonce els
-
 -- This will return a 'Just' from the time the rewards are updated until the end of the
 -- epoch. It is 'Nothing' for the first block of a new epoch (which is slightly inconvenient).
-ledgerRewardUpdate :: LedgerEnv -> LedgerState CardanoBlock -> Maybe Generic.Rewards
-ledgerRewardUpdate env lsc =
+ledgerEpochUpdate :: LedgerEnv -> LedgerState CardanoBlock -> Maybe Generic.Rewards
+ledgerEpochUpdate env lsc =
     case lsc of
       LedgerStateByron _ -> Nothing -- This actually happens during the Byron era.
       LedgerStateShelley sls -> Generic.shelleyRewards (leNetwork env) sls
       LedgerStateAllegra als -> Generic.allegraRewards (leNetwork env) als
       LedgerStateMary mls -> Generic.maryRewards (leNetwork env) mls
 
-mkRewardUpdate :: IO RewardUpdate
-mkRewardUpdate =
-  RewardUpdate
+mkEpochUpdateControl :: IO EpochUpdateControl
+mkEpochUpdateControl =
+  EpochUpdateControl
     <$> newTVarIO  WaitingForData
     <*> newEmptyTMVarIO
     <*> newEmptyTMVarIO
@@ -555,26 +540,20 @@ totalAdaPots lState =
 rewardWibble :: LedgerEnv -> IO ()
 rewardWibble env = do
     currState <- readTVarIO (leStateVar env)
-    upState <- readTVarIO (ruState $ leRewardUpdate env)
+    upState <- readTVarIO (ruState $ leEpochUpdate env)
     when (upState == WaitingForData) $ do
-      case unRewardUpdate currState of
+      let mRewards = Generic.epochRewards (leNetwork env) (clsState currState)
+      case Generic.epochUpdate (leNetwork env) (ledgerEpochNo env currState) (clsState currState) mRewards of
         Nothing -> pure ()
-        Just _ ->
-          putStrLn $ "rewardWibble: " ++ show (isRewardCalculationComplete currState, ledgerEpochNo env currState, ledgerSlotNo currState)
+        Just ru -> do
+          putTextLn "\nrewardWibble\n"
+          atomically $ do
+            putTMVar (ruInsertDone $ leEpochUpdate env) ru
+            writeTVar (ruState $ leEpochUpdate env) Processing
 
-  where
-    unRewardUpdate
-        :: CardanoLedgerState
-        -> Maybe (Map (Shelley.Credential 'Shelley.Staking StandardCrypto) (Set (Shelley.Reward StandardCrypto)))
-    unRewardUpdate els =
-      case ledgerState (clsState els) of
-        LedgerStateByron _ -> Nothing
-        LedgerStateShelley sls -> Generic.rewardUpdateMaybe sls
-        LedgerStateAllegra als -> Generic.rewardUpdateMaybe als
-        LedgerStateMary mls -> Generic.rewardUpdateMaybe mls
 
-isRewardCalculationComplete :: CardanoLedgerState -> Bool
-isRewardCalculationComplete els =
+_isRewardCalculationComplete :: CardanoLedgerState -> Bool
+_isRewardCalculationComplete els =
     case ledgerState (clsState els) of
       LedgerStateByron _ -> False
       LedgerStateShelley sls -> isComplete sls
