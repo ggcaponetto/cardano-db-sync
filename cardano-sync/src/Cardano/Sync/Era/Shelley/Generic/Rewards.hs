@@ -4,6 +4,7 @@ module Cardano.Sync.Era.Shelley.Generic.Rewards
   ( Rewards (..)
   , allegraRewards
   , maryRewards
+  , rewardUpdateMaybe
   , shelleyRewards
   ) where
 
@@ -70,14 +71,6 @@ genericRewards network lstate =
     rewardUpdate =
       completeRewardUpdate =<< Shelley.strictMaybeToMaybe (Shelley.nesRu $ Consensus.shelleyLedgerState lstate)
 
-    completeRewardUpdate
-        :: Shelley.PulsingRewUpdate crypto
-        -> Maybe (Map (Shelley.Credential 'Shelley.Staking crypto) (Set (Shelley.Reward crypto)))
-    completeRewardUpdate x =
-      case x of
-        Shelley.Pulsing {} -> Nothing -- Should never happen.
-        Shelley.Complete ru -> Just $ Shelley.rs ru
-
     validRewardAddress :: Shelley.Credential 'Shelley.Staking (Crypto era) -> a -> Bool
     validRewardAddress addr _value = Map.member addr rewardAccounts
 
@@ -88,3 +81,17 @@ genericRewards network lstate =
 
 mapBimap :: Ord k2 => (k1 -> k2) -> (a1 -> a2) -> Map k1 a1 -> Map k2 a2
 mapBimap fk fa = Map.fromList . map (bimap fk fa) . Map.toList
+
+completeRewardUpdate
+    :: Shelley.PulsingRewUpdate crypto
+    -> Maybe (Map (Shelley.Credential 'Shelley.Staking crypto) (Set (Shelley.Reward crypto)))
+completeRewardUpdate x =
+  case x of
+    Shelley.Pulsing {} -> Nothing
+    Shelley.Complete ru -> Just $ Shelley.rs ru
+
+rewardUpdateMaybe
+    :: LedgerState (ShelleyBlock era)
+    -> Maybe (Map (Shelley.Credential 'Shelley.Staking (Crypto era)) (Set (Shelley.Reward (Crypto era))))
+rewardUpdateMaybe lstate =
+  completeRewardUpdate =<< Shelley.strictMaybeToMaybe (Shelley.nesRu $ Consensus.shelleyLedgerState lstate)

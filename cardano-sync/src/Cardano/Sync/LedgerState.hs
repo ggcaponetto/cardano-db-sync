@@ -72,6 +72,7 @@ import qualified Ouroboros.Consensus.Ledger.Extended as Consensus
 import qualified Ouroboros.Consensus.Node.ProtocolInfo as Consensus
 import           Ouroboros.Consensus.Shelley.Ledger.Block
 import qualified Ouroboros.Consensus.Shelley.Ledger.Ledger as Consensus
+import           Ouroboros.Consensus.Shelley.Protocol (StandardCrypto)
 import qualified Ouroboros.Consensus.Shelley.Protocol as Consensus
 import           Ouroboros.Consensus.Storage.Serialisation (DecodeDisk (..), EncodeDisk (..))
 
@@ -81,8 +82,11 @@ import qualified Ouroboros.Network.Point as Point
 import qualified Shelley.Spec.Ledger.API.Protocol as Shelley
 import qualified Shelley.Spec.Ledger.BaseTypes as Shelley
 import           Shelley.Spec.Ledger.Coin (Coin)
+import qualified Shelley.Spec.Ledger.Credential as Shelley
+import qualified Shelley.Spec.Ledger.Keys as Shelley
 import           Shelley.Spec.Ledger.LedgerState (AccountState, EpochState, UTxOState)
 import qualified Shelley.Spec.Ledger.LedgerState as Shelley
+import qualified Shelley.Spec.Ledger.Rewards as Shelley
 import qualified Shelley.Spec.Ledger.STS.Tickn as Shelley
 import qualified Shelley.Spec.Ledger.UTxO as Shelley
 
@@ -107,10 +111,10 @@ data LedgerEnv = LedgerEnv
   }
 
 data RewardUpdate = RewardUpdate
-  { ruiState :: !(TVar RewardUpdateState)
-  , ruiSubmitData :: !(TMVar Generic.Rewards)
-  , ruiEpochSubmit :: !(TMVar EpochNo)
-  , ruiEpochContinue :: !(TMVar EpochNo)
+  { ruState :: !(TVar RewardUpdateState)
+  , ruSubmitData :: !(TMVar Generic.Rewards)
+  , ruEpochSubmit :: !(TMVar EpochNo)
+  , ruEpochContinue :: !(TMVar EpochNo)
   }
 
 data RewardUpdateState
@@ -169,18 +173,20 @@ initCardanoLedgerState pInfo = CardanoLedgerState
 -- matches the tip hash of the 'LedgerState'). This was originally for debugging but the check is
 -- cheap enough to keep.
 applyBlock :: LedgerEnv -> CardanoBlock -> IO LedgerStateSnapshot
-applyBlock env blk =
+applyBlock env blk = do
     -- 'LedgerStateVar' is just being used as a mutable variable. There should not ever
     -- be any contention on this variable, so putting everything inside 'atomically'
     -- is fine.
-    atomically $ do
-      oldState <- readTVar (leStateVar env)
-      let !newState = oldState { clsState = applyBlk (ExtLedgerCfg (topLevelConfig env)) blk (clsState oldState) }
-      writeTVar (leStateVar env) newState
-      pure $ LedgerStateSnapshot
-                { lssState = newState
-                , lssNewEpoch = mkNewEpoch oldState newState
-                }
+    res <- atomically $ do
+            oldState <- readTVar (leStateVar env)
+            let !newState = oldState { clsState = applyBlk (ExtLedgerCfg (topLevelConfig env)) blk (clsState oldState) }
+            writeTVar (leStateVar env) newState
+            pure $ LedgerStateSnapshot
+                    { lssState = newState
+                    , lssNewEpoch = mkNewEpoch oldState newState
+                    }
+    rewardWibble env
+    pure res
   where
     applyBlk
         :: ExtLedgerCfg CardanoBlock -> CardanoBlock
@@ -191,6 +197,7 @@ applyBlock env blk =
         Left err -> panic err
         Right result -> result
 
+    mkNewEpoch :: CardanoLedgerState -> CardanoLedgerState -> Maybe Generic.NewEpoch
     mkNewEpoch oldState newState =
       if ledgerEpochNo env newState == ledgerEpochNo env oldState + 1
         then
@@ -457,6 +464,12 @@ ledgerEpochNo env cls =
     epochInfo :: EpochInfo Identity
     epochInfo = epochInfoLedger (configLedger $ topLevelConfig env) (hardForkLedgerStatePerEra . ledgerState $ clsState cls)
 
+ledgerSlotNo :: CardanoLedgerState -> SlotNo
+ledgerSlotNo cls =
+    case ledgerTipSlot (ledgerState (clsState cls)) of
+      Origin -> 0 -- An empty chain is in epoch 0
+      NotOrigin slot -> slot
+
 -- Create an EpochUpdate from the current epoch state and the rewards from the last epoch.
 ledgerEpochUpdate :: LedgerEnv -> ExtLedgerState CardanoBlock -> Maybe Generic.Rewards -> Maybe Generic.EpochUpdate
 ledgerEpochUpdate env els mRewards =
@@ -537,3 +550,42 @@ totalAdaPots lState =
 
     utxo :: Coin
     utxo = Val.coin $ Shelley.balance (Shelley._utxo uState)
+
+
+rewardWibble :: LedgerEnv -> IO ()
+rewardWibble env = do
+    currState <- readTVarIO (leStateVar env)
+    upState <- readTVarIO (ruState $ leRewardUpdate env)
+    when (upState == WaitingForData) $ do
+      case unRewardUpdate currState of
+        Nothing -> pure ()
+        Just _ ->
+          putStrLn $ "rewardWibble: " ++ show (isRewardCalculationComplete currState, ledgerEpochNo env currState, ledgerSlotNo currState)
+
+  where
+    unRewardUpdate
+        :: CardanoLedgerState
+        -> Maybe (Map (Shelley.Credential 'Shelley.Staking StandardCrypto) (Set (Shelley.Reward StandardCrypto)))
+    unRewardUpdate els =
+      case ledgerState (clsState els) of
+        LedgerStateByron _ -> Nothing
+        LedgerStateShelley sls -> Generic.rewardUpdateMaybe sls
+        LedgerStateAllegra als -> Generic.rewardUpdateMaybe als
+        LedgerStateMary mls -> Generic.rewardUpdateMaybe mls
+
+isRewardCalculationComplete :: CardanoLedgerState -> Bool
+isRewardCalculationComplete els =
+    case ledgerState (clsState els) of
+      LedgerStateByron _ -> False
+      LedgerStateShelley sls -> isComplete sls
+      LedgerStateAllegra als -> isComplete als
+      LedgerStateMary mls -> isComplete mls
+
+  where
+    isComplete :: forall era . LedgerState (ShelleyBlock era) -> Bool
+    isComplete sls =
+      case Shelley.strictMaybeToMaybe (Shelley.nesRu $ Consensus.shelleyLedgerState sls) of
+        Nothing -> False
+        Just Shelley.Pulsing {} -> False
+        Just Shelley.Complete {} -> True
+

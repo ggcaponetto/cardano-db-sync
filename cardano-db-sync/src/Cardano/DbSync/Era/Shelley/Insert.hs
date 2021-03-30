@@ -147,7 +147,7 @@ renderInsertName eraName =
 
 logMyShit :: Trace IO Text -> LedgerEnv -> IO ()
 logMyShit tracer env =
-  readTVarIO (ruiState $ leRewardUpdate env) >>= logInfo tracer . textShow
+  readTVarIO (ruState $ leRewardUpdate env) >>= logInfo tracer . textShow
 
 -- -----------------------------------------------------------------------------
 
