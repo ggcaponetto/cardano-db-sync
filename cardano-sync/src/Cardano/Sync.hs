@@ -47,6 +47,7 @@ import           Cardano.Sync.Config
 import           Cardano.Sync.Database (DbAction (..), DbActionQueue, lengthDbActionQueue,
                    mkDbApply, mkDbRollback, newDbActionQueue, runDbStartup, writeDbActionQueue)
 import           Cardano.Sync.Error
+import           Cardano.Sync.LedgerState
 import           Cardano.Sync.Metrics
 import           Cardano.Sync.Plugin (SyncNodePlugin (..))
 import           Cardano.Sync.StateQuery (StateQueryTMVar, getSlotDetails, localStateQueryHandler,
@@ -121,15 +122,11 @@ type RunDBThreadFunction
     -> IO ()
 
 runSyncNode
-    :: SyncDataLayer
-    -> MetricSetters
-    -> Trace IO Text
-    -> SyncNodePlugin
-    -> SyncNodeParams
-    -> InsertValidateGenesisFunction
+    :: Trace IO Text -> SyncDataLayer -> EpochUpdateControl -> MetricSetters
+    -> SyncNodePlugin -> SyncNodeParams -> InsertValidateGenesisFunction
     -> RunDBThreadFunction
     -> IO ()
-runSyncNode dataLayer metricsSetters trce plugin enp insertValidateGenesisDist runDBThreadFunction =
+runSyncNode trce dataLayer euc metricsSetters plugin enp insertValidateGenesisDist runDBThreadFunction =
   withIOManager $ \iomgr -> do
 
     let configFile = enpConfigFile enp
@@ -152,7 +149,7 @@ runSyncNode dataLayer metricsSetters trce plugin enp insertValidateGenesisDist r
       liftIO $ runDbStartup trce plugin
       case genCfg of
           GenesisCardano _ bCfg _sCfg -> do
-            syncEnv <- ExceptT $ mkSyncEnvFromConfig dataLayer (enpLedgerStateDir enp) genCfg
+            syncEnv <- ExceptT $ mkSyncEnvFromConfig dataLayer euc (enpLedgerStateDir enp) genCfg
             liftIO $ runSyncNodeNodeClient metricsSetters syncEnv iomgr trce plugin
                         runDBThreadFunction (cardanoCodecConfig bCfg) (enpSocketPath enp)
   where

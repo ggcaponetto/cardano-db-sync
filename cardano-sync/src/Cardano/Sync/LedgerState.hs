@@ -19,6 +19,7 @@ module Cardano.Sync.LedgerState
   , listLedgerStateFilesOrdered
   , hashToAnnotation
   , loadLedgerStateFromFile
+  , mkEpochUpdateControl
   , mkLedgerEnv
   ) where
 
@@ -138,24 +139,21 @@ data LedgerStateSnapshot = LedgerStateSnapshot
   , lssNewEpoch :: !(Maybe Generic.NewEpoch) -- Only Just for a single block at the epoch boundary
   }
 
-mkLedgerEnv :: Consensus.ProtocolInfo IO CardanoBlock
-            -> LedgerStateDir
-            -> Shelley.Network
-            -> SlotNo
-            -> Bool
-            -> IO LedgerEnv
-mkLedgerEnv protocolInfo dir network slot deleteFiles = do
+mkLedgerEnv
+    :: Consensus.ProtocolInfo IO CardanoBlock -> EpochUpdateControl
+    -> LedgerStateDir -> Shelley.Network -> SlotNo -> Bool
+    -> IO LedgerEnv
+mkLedgerEnv protocolInfo eu dir network slot deleteFiles = do
   when deleteFiles $
     deleteNewerLedgerStateFiles dir slot
   st <- findLatestLedgerState protocolInfo dir deleteFiles
   var <- newTVarIO st
-  ru <- mkEpochUpdateControl
   pure LedgerEnv
     { leProtocolInfo = protocolInfo
     , leDir = dir
     , leNetwork = network
     , leStateVar = var
-    , leEpochUpdate = ru
+    , leEpochUpdate = eu
     }
 
 

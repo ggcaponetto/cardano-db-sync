@@ -51,10 +51,13 @@ data SyncDataLayer = SyncDataLayer
   , sdlGetLatestSlotNo :: IO SlotNo
   }
 
-mkSyncEnv :: SyncDataLayer -> ProtocolInfo IO CardanoBlock -> Shelley.Network -> NetworkMagic -> SystemStart -> LedgerStateDir -> IO SyncEnv
-mkSyncEnv dataLayer protocolInfo network networkMagic systemStart dir = do
+mkSyncEnv
+    :: SyncDataLayer -> ProtocolInfo IO CardanoBlock -> EpochUpdateControl
+    -> Shelley.Network -> NetworkMagic -> SystemStart -> LedgerStateDir
+    -> IO SyncEnv
+mkSyncEnv dataLayer protocolInfo euc network networkMagic systemStart dir = do
   latestSlot <- sdlGetLatestSlotNo dataLayer
-  ledgerEnv <- mkLedgerEnv protocolInfo dir network latestSlot True
+  ledgerEnv <- mkLedgerEnv protocolInfo euc dir network latestSlot True
   pure $ SyncEnv
           { envProtocol = SyncProtocolCardano
           , envNetworkMagic = networkMagic
@@ -63,8 +66,8 @@ mkSyncEnv dataLayer protocolInfo network networkMagic systemStart dir = do
           , envLedger = ledgerEnv
           }
 
-mkSyncEnvFromConfig :: SyncDataLayer -> LedgerStateDir -> GenesisConfig -> IO (Either SyncNodeError SyncEnv)
-mkSyncEnvFromConfig dataLayer dir genCfg =
+mkSyncEnvFromConfig :: SyncDataLayer -> EpochUpdateControl -> LedgerStateDir -> GenesisConfig -> IO (Either SyncNodeError SyncEnv)
+mkSyncEnvFromConfig dataLayer euc dir genCfg =
     case genCfg of
       GenesisCardano _ bCfg sCfg
         | unProtocolMagicId (Byron.configProtocolMagicId bCfg) /= Shelley.sgNetworkMagic (scConfig sCfg) ->
@@ -79,13 +82,12 @@ mkSyncEnvFromConfig dataLayer dir genCfg =
                 [ "SystemStart ", textShow (Byron.gdStartTime $ Byron.configGenesisData bCfg)
                 , " /= ", textShow (Shelley.sgSystemStart $ scConfig sCfg)
                 ]
-        | otherwise -> Right <$> mkSyncEnv
-                         dataLayer
-                         (mkProtocolInfoCardano genCfg)
-                         (Shelley.sgNetworkId (scConfig sCfg))
-                         (NetworkMagic (unProtocolMagicId $ Byron.configProtocolMagicId bCfg))
-                         (SystemStart (Byron.gdStartTime $ Byron.configGenesisData bCfg))
-                         dir
+        | otherwise ->
+            Right <$> mkSyncEnv dataLayer (mkProtocolInfoCardano genCfg) euc
+                        (Shelley.sgNetworkId $ scConfig sCfg)
+                        (NetworkMagic (unProtocolMagicId $ Byron.configProtocolMagicId bCfg))
+                        (SystemStart (Byron.gdStartTime $ Byron.configGenesisData bCfg))
+                        dir
 
 getLatestPoints :: SyncEnv -> IO [CardanoPoint]
 getLatestPoints env = do

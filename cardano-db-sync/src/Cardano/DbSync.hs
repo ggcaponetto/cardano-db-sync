@@ -33,9 +33,11 @@ import           Cardano.BM.Trace (Trace)
 import qualified Cardano.Db as DB
 
 import           Cardano.DbSync.Era (insertValidateGenesisDist)
+import           Cardano.DbSync.Era.Shelley.Insert.Epoch (runEpochUpdateThread)
 import           Cardano.DbSync.Plugin.Default (defDbSyncNodePlugin)
 import           Cardano.DbSync.Rollback (unsafeRollback)
 import           Cardano.Sync.Database (runDbThread)
+import           Cardano.Sync.LedgerState (EpochUpdateControl (..), mkEpochUpdateControl)
 
 import           Cardano.Sync (Block (..), MetricSetters, SyncDataLayer (..), SyncNodePlugin (..),
                    configureLogging, runSyncNode)
@@ -46,7 +48,7 @@ import           Cardano.Sync.Tracing.ToObjectOrphans ()
 
 import           Control.Monad.Extra (whenJust)
 
-import           Database.Persist.Postgresql (withPostgresqlConn)
+import           Database.Persist.Postgresql (ConnectionString, withPostgresqlConn)
 
 import           Database.Persist.Sql (SqlBackend)
 
@@ -63,21 +65,34 @@ runDbSyncNode metricsSetters mkPlugin params = do
 
     trce <- configureLogging params "db-sync-node"
 
-    let connectionString = DB.toConnectionString pgConfig
+    -- This is a convoluted mess because `cardano-db` and `cardano-sync` should
+    -- be in the same package. The split is only needed because SMASH uses
+    -- the `cardano-sync` part of `db-sync` as a library. Once that is no longer
+    -- the case, these two packages will be reunited and the code cleaned up.
 
-    DB.runIohkLogging trce $ withPostgresqlConn connectionString $ \backend ->
-      lift $ do
-        -- For testing and debugging.
-        whenJust (enpMaybeRollback params) $ \ slotNo ->
-          void $ unsafeRollback trce slotNo
+    let connectString = DB.toConnectionString pgConfig
 
-        runSyncNode (mkSyncDataLayer trce backend) metricsSetters trce (mkPlugin backend)
-            params (insertValidateGenesisDist backend) runDbThread
+    epochUpdate <- mkEpochUpdateControl
+
+    race_
+      (runDBInsertThread trce connectString epochUpdate)
+      (runEpochUpdateThread trce epochUpdate)
   where
     -- This is only necessary because `cardano-db` and `cardano-sync` both define
     -- this newtype, but the later does not depend on the former.
     dbMigrationDir :: DB.MigrationDir
     dbMigrationDir = DB.MigrationDir $ unMigrationDir (enpMigrationDir params)
+
+    runDBInsertThread :: Trace IO Text -> ConnectionString -> EpochUpdateControl -> IO ()
+    runDBInsertThread trce connectString euc =
+      DB.runIohkLogging trce $ withPostgresqlConn connectString $ \backend ->
+        lift $ do
+          -- For testing and debugging.
+          whenJust (enpMaybeRollback params) $ \ slotNo ->
+            void $ unsafeRollback trce slotNo
+
+          runSyncNode trce (mkSyncDataLayer trce backend) euc metricsSetters
+              (mkPlugin backend) params (insertValidateGenesisDist backend) runDbThread
 
 -- -------------------------------------------------------------------------------------------------
 
