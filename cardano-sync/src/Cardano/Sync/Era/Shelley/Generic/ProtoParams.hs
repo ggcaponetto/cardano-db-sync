@@ -1,5 +1,4 @@
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
 module Cardano.Sync.Era.Shelley.Generic.ProtoParams
   ( ProtoParams (..)
   , epochProtoParams
@@ -17,6 +16,7 @@ import           Cardano.Sync.Types
 import           Ouroboros.Consensus.Cardano.Block (LedgerState (..), StandardAllegra, StandardMary,
                    StandardShelley)
 import           Ouroboros.Consensus.Ledger.Extended (ExtLedgerState (..))
+
 
 import           Ouroboros.Consensus.Cardano (Nonce (..))
 import           Ouroboros.Consensus.Shelley.Ledger.Block (ShelleyBlock)
@@ -50,13 +50,13 @@ data ProtoParams = ProtoParams
   }
 
 
-epochProtoParams :: ExtLedgerState CardanoBlock -> ProtoParams
+epochProtoParams :: ExtLedgerState CardanoBlock -> Maybe ProtoParams
 epochProtoParams lstate =
   case ledgerState lstate of
-    LedgerStateByron _ -> panic "epochProtoParams: Unexpected Byron era"
-    LedgerStateShelley sls -> shelleyProtoParams sls
-    LedgerStateAllegra als -> allegraProtoParams als
-    LedgerStateMary mls -> maryProtoParams mls
+    LedgerStateByron _ -> Nothing
+    LedgerStateShelley sls -> Just $ shelleyProtoParams sls
+    LedgerStateAllegra als -> Just $ allegraProtoParams als
+    LedgerStateMary mls -> Just $ maryProtoParams mls
 
 -- -------------------------------------------------------------------------------------------------
 

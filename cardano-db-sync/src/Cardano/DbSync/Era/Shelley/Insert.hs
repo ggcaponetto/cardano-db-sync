@@ -162,7 +162,8 @@ insertOnNewEpoch tracer blkId slotNo epochNo newEpoch = do
       whenJust (Generic.euRewards esum) $ \ grewards ->
         insertGenericRewards grewards stakes
 
-      insertEpochParam tracer blkId epochNo (Generic.neProtoParams newEpoch) (Generic.neNonce newEpoch)
+      whenJust (Generic.neProtoParams newEpoch) $ \ protoParams ->
+        insertEpochParam tracer blkId epochNo protoParams (Generic.neNonce newEpoch)
       insertEpochStake tracer blkId epochNo stakes
 
     whenJust (Generic.adaPots newEpoch) $ \pots ->

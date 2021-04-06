@@ -31,7 +31,7 @@ data NewEpoch = NewEpoch
   { epoch :: !EpochNo
   , isEBB :: !Bool
   , adaPots :: !(Maybe AdaPots)
-  , neProtoParams :: !ProtoParams
+  , neProtoParams :: !(Maybe ProtoParams)
   , neNonce :: !Shelley.Nonce
   , neEpochUpdate :: !(Maybe EpochUpdate)
   }
