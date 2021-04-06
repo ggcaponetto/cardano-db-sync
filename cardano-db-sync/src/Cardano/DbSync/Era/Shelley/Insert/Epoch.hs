@@ -68,7 +68,7 @@ runEpochUpdateThread tracer euc = do
     -- Will block until data arrives.
     epochUpdate <- atomically $ takeTMVar (ruInsertDone euc)
 
-    liftIO . logInfo tracer $
+    logInfo tracer $
         mconcat
           [ "Asynchonously inserting epoch updates for epoch "
           , textShow (unEpochNo $ Generic.euEpoch epochUpdate)
@@ -82,6 +82,7 @@ runEpochUpdateThread tracer euc = do
       insertEpochUpdate tracer epochUpdate
       liftIO $ waitOnTMVar (Generic.euEpoch epochUpdate)
 
+    logInfo tracer "Epoch update commited"
   where
     waitOnTMVar :: EpochNo -> IO ()
     waitOnTMVar epochNo = do
