@@ -201,9 +201,6 @@ applyBlock env blk = do
               , Generic.adaPots = getAdaPots newState
               , Generic.neProtoParams = Generic.epochProtoParams (clsState newState)
               , Generic.neNonce = fromMaybe Shelley.NeutralNonce (extractEpochNonce $ clsState newState)
-              , Generic.neEpochUpdate =
-                  Generic.epochUpdate (leNetwork env) (ledgerEpochNo env newState) (clsState newState)
-                    (ledgerEpochUpdate env (ledgerState $ clsState oldState))
               }
         else Nothing
 
@@ -467,8 +464,8 @@ _ledgerSlotNo cls =
 
 -- This will return a 'Just' from the time the rewards are updated until the end of the
 -- epoch. It is 'Nothing' for the first block of a new epoch (which is slightly inconvenient).
-ledgerEpochUpdate :: LedgerEnv -> LedgerState CardanoBlock -> Maybe Generic.Rewards
-ledgerEpochUpdate env lsc =
+_ledgerEpochUpdate :: LedgerEnv -> LedgerState CardanoBlock -> Maybe Generic.Rewards
+_ledgerEpochUpdate env lsc =
     case lsc of
       LedgerStateByron _ -> Nothing -- This actually happens during the Byron era.
       LedgerStateShelley sls -> Generic.shelleyRewards (leNetwork env) sls
@@ -543,26 +540,7 @@ rewardWibble env = do
       let mRewards = Generic.epochRewards (leNetwork env) (clsState currState)
       case Generic.epochUpdate (leNetwork env) (ledgerEpochNo env currState) (clsState currState) mRewards of
         Nothing -> pure ()
-        Just ru -> do
-          putTextLn "\nrewardWibble\n"
+        Just ru ->
           atomically $ do
             putTMVar (ruInsertDone $ leEpochUpdate env) ru
             writeTVar (ruState $ leEpochUpdate env) Processing
-
-
-_isRewardCalculationComplete :: CardanoLedgerState -> Bool
-_isRewardCalculationComplete els =
-    case ledgerState (clsState els) of
-      LedgerStateByron _ -> False
-      LedgerStateShelley sls -> isComplete sls
-      LedgerStateAllegra als -> isComplete als
-      LedgerStateMary mls -> isComplete mls
-
-  where
-    isComplete :: forall era . LedgerState (ShelleyBlock era) -> Bool
-    isComplete sls =
-      case Shelley.strictMaybeToMaybe (Shelley.nesRu $ Consensus.shelleyLedgerState sls) of
-        Nothing -> False
-        Just Shelley.Pulsing {} -> False
-        Just Shelley.Complete {} -> True
-
