@@ -170,9 +170,9 @@ insertRewards _tracer epoch rewards = do
         => (Generic.StakeCred, Set (Shelley.Reward StandardCrypto))
         -> ExceptT SyncNodeError (ReaderT SqlBackend m) [DB.Reward]
     mkRewards (saddr, rset) = do
-      saId <- liftLookupFail "insertReward StakeAddress" $ queryStakeAddress (Generic.unStakeCred saddr)
+      saId <- liftLookupFail "insertRewards StakeAddress" $ queryStakeAddress (Generic.unStakeCred saddr)
       forM (Set.toList rset) $ \ rwd -> do
-        poolId <- liftLookupFail "insertReward StakePool" $ queryStakePoolKeyHash (Shelley.rewardPool rwd)
+        poolId <- liftLookupFail "insertRewards StakePool" $ queryStakePoolKeyHash (Shelley.rewardPool rwd)
         pure $ DB.Reward
                   { DB.rewardAddrId = saId
                   , DB.rewardType = DB.showRewardType (Shelley.rewardType rwd)
@@ -197,9 +197,9 @@ insertOrphanedRewards _tracer epoch orphanedRewards =
         => (Generic.StakeCred, Set (Shelley.Reward StandardCrypto))
         -> ExceptT SyncNodeError (ReaderT SqlBackend m) [DB.OrphanedReward]
     mkOrphanedReward (saddr, rset) = do
-      saId <- liftLookupFail "insertReward StakeAddress" $ queryStakeAddress (Generic.unStakeCred saddr)
+      saId <- liftLookupFail "insertOrphanedRewards StakeAddress" $ queryStakeAddress (Generic.unStakeCred saddr)
       forM (Set.toList rset) $ \ rwd -> do
-        poolId <- liftLookupFail "insertReward StakePool" $ queryStakePoolKeyHash (Shelley.rewardPool rwd)
+        poolId <- liftLookupFail "insertOrphanedRewards StakePool" $ queryStakePoolKeyHash (Shelley.rewardPool rwd)
         pure $ DB.OrphanedReward
                   { DB.orphanedRewardAddrId = saId
                   , DB.orphanedRewardType = DB.showRewardType (Shelley.rewardType rwd)
