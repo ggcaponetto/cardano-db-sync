@@ -84,12 +84,15 @@ runEpochUpdateThread tracer euc = do
     -- This starts a new database connection and runs the following in a
     -- transaction.
     DB.runDbNoLogging $ do
+      liftIO $ logInfo tracer "runEpochUpdateThread: About to insert"
       res <- runExceptT $ insertEpochUpdate tracer epochUpdate
       case res of
         Left err -> liftIO . logInfo tracer $ "insertEpochUpdate: " <> renderSyncNodeError err
         Right () -> pure ()
+      liftIO $ logInfo tracer "runEpochUpdateThread: waiting"
       liftIO $ waitOnTMVar (Generic.euEpoch epochUpdate)
 
+    liftIO $ logInfo tracer "runEpochUpdateThread: committed"
     reportEpochUpdate tracer epochUpdate
   where
     waitOnTMVar :: EpochNo -> IO ()

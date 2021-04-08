@@ -9,7 +9,7 @@ module Cardano.DbSync.Plugin.Default
 
 import           Cardano.Prelude
 
-import           Cardano.BM.Trace (Trace, logNotice)
+import           Cardano.BM.Trace (Trace, logInfo)
 
 import qualified Cardano.Db as DB
 
@@ -56,16 +56,18 @@ insertDefaultBlock
 insertDefaultBlock backend tracer env blockDetails = do
     -- Take the list of BlockDetails, split the list into chunks that only contain the same
     -- epoch and then insert the chunks.
-    case blockDetails of
-      [] -> pure $ Right ()
-      (x:_) -> do
-        commitEpochUpdate tracer (envLedger env) (sdEpochNo $ bdSlot x)
-        traverseMEither insertEpochChunk $ chunkByEpoch blockDetails
+    traverseMEither insertEpochChunk $ chunkByEpoch blockDetails
   where
     insertEpochChunk :: [BlockDetails] -> IO (Either SyncNodeError ())
     insertEpochChunk xs =
-      DB.runDbIohkLogging backend tracer $
-        traverseMEither insertBlock xs
+      case xs of
+        [] -> pure $ Right ()
+        (x:_) -> do
+          commitEpochUpdate tracer (envLedger env) (sdEpochNo $ bdSlot x)
+          res <- DB.runDbIohkLogging backend tracer $
+                    traverseMEither insertBlock xs
+          logInfo tracer "insertEpochChunk done"
+          pure res
 
     insertBlock :: BlockDetails -> ReaderT SqlBackend (LoggingT IO) (Either SyncNodeError ())
     insertBlock (BlockDetails cblk details) = do
@@ -90,12 +92,12 @@ insertDefaultBlock backend tracer env blockDetails = do
 commitEpochUpdate :: Trace IO Text -> LedgerEnv -> EpochNo -> IO ()
 commitEpochUpdate tracer env currentEpoch = do
   st <- readTVarIO (ruState $ leEpochUpdate env)
-  logNotice tracer $ "commitEpochUpdate: " <> textShow st
+  logInfo tracer $ "commitEpochUpdate: " <> textShow st
   case st of
     WaitingForData -> pure ()
     Processing -> pure ()
     WaitingForEpoch waitEpoch -> do
-      logNotice tracer $ "commitEpochUpdate: " <> textShow (waitEpoch, currentEpoch)
+      logInfo tracer $ "commitEpochUpdate: " <> textShow (waitEpoch, currentEpoch)
       when (waitEpoch == currentEpoch) $
         atomically $ putTMVar (ruCommit $ leEpochUpdate env) ()
 
