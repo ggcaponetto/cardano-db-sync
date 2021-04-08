@@ -96,7 +96,7 @@ runEpochUpdateThread tracer euc = do
     waitOnTMVar epochNo = do
       -- Signal the main thread that insertion is complete.
       atomically $ do
-        writeTVar (ruState euc) WaitingForEpoch
+        writeTVar (ruState euc) (WaitingForEpoch $ epochNo + 1)
         putTMVar (ruUpdateReady euc) ()
 
       logInfo tracer $

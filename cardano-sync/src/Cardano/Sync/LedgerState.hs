@@ -116,7 +116,7 @@ data EpochUpdateControl = EpochUpdateControl
 data EpochUpdateState
   = WaitingForData
   | Processing
-  | WaitingForEpoch
+  | WaitingForEpoch !EpochNo -- The epoch at which the database update will be commited.
   deriving (Eq, Show)
 
 
