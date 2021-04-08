@@ -1,6 +1,5 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
 module Cardano.DbSync.Plugin.Default
   ( defDbSyncNodePlugin
   , insertDefaultBlock
@@ -17,6 +16,7 @@ import qualified Cardano.Db as DB
 import           Cardano.DbSync.Era.Byron.Insert (insertByronBlock)
 import qualified Cardano.DbSync.Era.Shelley.Generic as Generic
 import           Cardano.DbSync.Era.Shelley.Insert (insertShelleyBlock)
+import           Cardano.DbSync.Era.Shelley.Query (queryStakeAddress)
 import           Cardano.DbSync.Rollback (rollbackToSlot)
 
 import           Cardano.Slotting.Slot (EpochNo (..))
@@ -126,17 +126,27 @@ prepareEpochUpdate env = do
       case Generic.epochUpdate (leNetwork env) (ledgerEpochNo env currState) (clsState currState) mRewards of
         Nothing -> pure ()
         Just origRu -> do
-          ru <- queryPopulateEpochUpdateCaches env origRu
+          ru <- queryPopulateEpochUpdateCaches origRu
           liftIO . atomically $ do
             putTMVar (ruInsertDone $ leEpochUpdate env) ru
             writeTVar (ruState $ leEpochUpdate env) Processing
 
-queryPopulateEpochUpdateCaches :: MonadIO m => SyncEnv -> Generic.EpochUpdate -> ReaderT SqlBackend m Generic.EpochUpdate
-queryPopulateEpochUpdateCaches env origRu = do
-    addrs <- mapM ((\ a -> (a,) <$> queryStakeAddress) . Generic.stakingCredHash env) stakeAddresses
+queryPopulateEpochUpdateCaches :: MonadIO m => Generic.EpochUpdate -> ReaderT SqlBackend m Generic.EpochUpdate
+queryPopulateEpochUpdateCaches origRu = do
+    addrPairs <- mapM queryLocalStakeAddress stakeAddresses
     pure $ origRu
-            { Generic.enStakeAddressCache = Map.fromList addrs
+            { Generic.enStakeAddressCache = Map.fromList addrPairs
             }
   where
     stakeAddresses :: [Generic.StakeCred]
-    stakeAddresses = List.nub . List.sort $ Map.keys (Generic.enStakeAddressCache origRu)
+    stakeAddresses = Map.keys (Generic.unStakeDist $ Generic.euStakeDistribution origRu)
+
+    queryLocalStakeAddress
+        :: MonadIO m
+        => Generic.StakeCred
+        -> ReaderT SqlBackend m (Generic.StakeCred, DB.StakeAddressId)
+    queryLocalStakeAddress addr = do
+      eres <- queryStakeAddress (Generic.unStakeCred addr)
+      case eres of
+        Left err -> panic $ "queryPopulateEpochUpdateCaches: " <> textShow err
+        Right addrId -> pure (addr, addrId)
