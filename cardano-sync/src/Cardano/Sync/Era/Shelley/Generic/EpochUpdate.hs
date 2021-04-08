@@ -11,6 +11,8 @@ module Cardano.Sync.Era.Shelley.Generic.EpochUpdate
 
 import           Cardano.Prelude
 
+import qualified Cardano.Db as Db
+
 import           Cardano.Slotting.Slot (EpochNo (..))
 
 import           Cardano.Sync.Era.Shelley.Generic.ProtoParams
@@ -39,6 +41,9 @@ data EpochUpdate = EpochUpdate
   { euEpoch :: !EpochNo
   , euRewards :: !(Maybe Rewards)
   , euStakeDistribution :: !StakeDist
+  -- The following Maps are initialized as empty and populated later.
+  , enStakeAddressCache :: !(Map StakeCred Db.StakeAddressId)
+  , enPoolIdCache :: !(Map StakeCred Db.PoolHashId)
   }
 
 -- There is a similar type in ledger-spec, but it is not exported yet.
@@ -68,6 +73,8 @@ allegraEpochUpdate nw epochNo als mRewards =
     { euEpoch = epochNo
     , euRewards = mRewards
     , euStakeDistribution = allegraStakeDist nw als
+    , enStakeAddressCache = mempty
+    , enPoolIdCache = mempty
     }
 
 maryEpochUpdate :: Shelley.Network -> EpochNo -> LedgerState (ShelleyBlock StandardMary) -> Maybe Rewards -> EpochUpdate
@@ -76,6 +83,8 @@ maryEpochUpdate nw epochNo mls mRewards =
     { euEpoch = epochNo
     , euRewards = mRewards
     , euStakeDistribution = maryStakeDist nw mls
+    , enStakeAddressCache = mempty
+    , enPoolIdCache = mempty
     }
 
 shelleyEpochUpdate :: Shelley.Network -> EpochNo -> LedgerState (ShelleyBlock StandardShelley) -> Maybe Rewards -> EpochUpdate
@@ -84,4 +93,6 @@ shelleyEpochUpdate nw epochNo sls mRewards =
     { euEpoch = epochNo
     , euRewards = mRewards
     , euStakeDistribution = shelleyStakeDist nw sls
+    , enStakeAddressCache = mempty
+    , enPoolIdCache = mempty
     }

@@ -1,5 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 module Cardano.DbSync.Plugin.Default
   ( defDbSyncNodePlugin
   , insertDefaultBlock
@@ -28,10 +29,11 @@ import           Cardano.Sync.Types
 import           Cardano.Sync.Util
 
 import           Control.Concurrent.STM.TMVar (putTMVar)
-import           Control.Concurrent.STM.TVar (readTVarIO)
+import           Control.Concurrent.STM.TVar (readTVarIO, writeTVar)
 import           Control.Monad.Logger (LoggingT)
 
 import qualified Data.List as List
+import qualified Data.Map.Strict as Map
 
 import           Database.Persist.Sql (SqlBackend)
 
@@ -75,6 +77,7 @@ insertDefaultBlock backend tracer env blockDetails = do
       -- update ledgerStateVar.
       let network = leNetwork (envLedger env)
       lStateSnap <- liftIO $ applyBlock (envLedger env) cblk
+      prepareEpochUpdate (envLedger env)
       res <- case cblk of
                 BlockByron blk ->
                   insertByronBlock tracer blk details
@@ -113,3 +116,27 @@ chunkByEpoch ws =
           ([], _) -> panic "Cardano.DbSync.Plugin.Default.chunkByEpoch: Impossible"
           (ys, []) -> [ys]
           (ys, zs) -> ys : chunkByEpoch zs
+
+prepareEpochUpdate :: MonadIO m => LedgerEnv -> ReaderT SqlBackend m ()
+prepareEpochUpdate env = do
+    currState <- liftIO $ readTVarIO (leStateVar env)
+    upState <- liftIO $ readTVarIO (ruState $ leEpochUpdate env)
+    when (upState /= WaitingForData) $ do
+      let mRewards = Generic.epochRewards (leNetwork env) (clsState currState)
+      case Generic.epochUpdate (leNetwork env) (ledgerEpochNo env currState) (clsState currState) mRewards of
+        Nothing -> pure ()
+        Just origRu -> do
+          ru <- queryPopulateEpochUpdateCaches env origRu
+          liftIO . atomically $ do
+            putTMVar (ruInsertDone $ leEpochUpdate env) ru
+            writeTVar (ruState $ leEpochUpdate env) Processing
+
+queryPopulateEpochUpdateCaches :: MonadIO m => SyncEnv -> Generic.EpochUpdate -> ReaderT SqlBackend m Generic.EpochUpdate
+queryPopulateEpochUpdateCaches env origRu = do
+    addrs <- mapM ((\ a -> (a,) <$> queryStakeAddress) . Generic.stakingCredHash env) stakeAddresses
+    pure $ origRu
+            { Generic.enStakeAddressCache = Map.fromList addrs
+            }
+  where
+    stakeAddresses :: [Generic.StakeCred]
+    stakeAddresses = List.nub . List.sort $ Map.keys (Generic.enStakeAddressCache origRu)

@@ -14,6 +14,7 @@ module Cardano.Sync.LedgerState
   , EpochUpdateControl (..)
   , EpochUpdateState (..)
   , applyBlock
+  , ledgerEpochNo
   , loadLedgerStateAtPoint
   , saveLedgerStateMaybe
   , listLedgerStateFilesOrdered
@@ -41,7 +42,7 @@ import           Cardano.Slotting.Block (BlockNo (..))
 import           Cardano.Slotting.EpochInfo (EpochInfo, epochInfoEpoch)
 import           Cardano.Slotting.Slot (EpochNo (..), SlotNo (..), WithOrigin (..), fromWithOrigin)
 
-import           Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar)
+import           Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO)
 import           Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVarIO, writeTVar)
 
 import qualified Control.Exception as Exception
@@ -170,16 +171,14 @@ applyBlock env blk = do
     -- 'LedgerStateVar' is just being used as a mutable variable. There should not ever
     -- be any contention on this variable, so putting everything inside 'atomically'
     -- is fine.
-    res <- atomically $ do
-            oldState <- readTVar (leStateVar env)
-            let !newState = oldState { clsState = applyBlk (ExtLedgerCfg (topLevelConfig env)) blk (clsState oldState) }
-            writeTVar (leStateVar env) newState
-            pure $ LedgerStateSnapshot
-                    { lssState = newState
-                    , lssNewEpoch = mkNewEpoch oldState newState
-                    }
-    rewardWibble env
-    pure res
+    atomically $ do
+      oldState <- readTVar (leStateVar env)
+      let !newState = oldState { clsState = applyBlk (ExtLedgerCfg (topLevelConfig env)) blk (clsState oldState) }
+      writeTVar (leStateVar env) newState
+      pure $ LedgerStateSnapshot
+              { lssState = newState
+              , lssNewEpoch = mkNewEpoch oldState newState
+              }
   where
     applyBlk
         :: ExtLedgerCfg CardanoBlock -> CardanoBlock
@@ -530,17 +529,3 @@ totalAdaPots lState =
 
     utxo :: Coin
     utxo = Val.coin $ Shelley.balance (Shelley._utxo uState)
-
-
-rewardWibble :: LedgerEnv -> IO ()
-rewardWibble env = do
-    currState <- readTVarIO (leStateVar env)
-    upState <- readTVarIO (ruState $ leEpochUpdate env)
-    when (upState == WaitingForData) $ do
-      let mRewards = Generic.epochRewards (leNetwork env) (clsState currState)
-      case Generic.epochUpdate (leNetwork env) (ledgerEpochNo env currState) (clsState currState) mRewards of
-        Nothing -> pure ()
-        Just ru ->
-          atomically $ do
-            putTMVar (ruInsertDone $ leEpochUpdate env) ru
-            writeTVar (ruState $ leEpochUpdate env) Processing
